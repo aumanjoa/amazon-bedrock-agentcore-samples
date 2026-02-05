@@ -342,7 +342,7 @@ proto-plus==1.26.1
     #   google-cloud-spanner
     #   google-cloud-speech
     #   google-cloud-trace
-protobuf==6.33.0
+protobuf==6.33.5
     # via
     #   a2a-sdk
     #   google-api-core
