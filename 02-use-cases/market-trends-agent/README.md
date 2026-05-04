@@ -2,7 +2,7 @@
 
 ## Overview
 
-This use case implements an intelligent financial analysis agent using Amazon Bedrock AgentCore that provides real-time market intelligence, stock analysis, and personalized investment recommendations. The agent combines LLM-powered analysis with live market data and maintains persistent memory of broker preferences across sessions.
+This use case implements an intelligent financial analysis agent using Amazon Bedrock AgentCore that provides real-time market intelligence, stock analysis, and personalized investment recommendations. The agent combines LLM-powered analysis with live market data and maintains persistent memory of broker preferences across sessions. This sample also demonstrates how to use custom code-based evaluations from AgentCore Evaluations, and the continuous agent improvement loop using AgentCore Optimization.
 
 ## Use Case Architecture
 
@@ -12,7 +12,7 @@ This use case implements an intelligent financial analysis agent using Amazon Be
 |-------------|---------|
 | Use case type | Conversational |
 | Agent type | Graph |
-| Use case components | Memory, Tools, Browser Automation, Custom Code-Based Evaluators |
+| Use case components | Memory, Tools, Browser Automation, Custom Code-Based Evaluators, AgentCore Optimization |
 | Use case vertical | Financial Services |
 | Example complexity | Advanced |
 | SDK used | Amazon Bedrock AgentCore SDK, LangGraph, Playwright |
@@ -29,6 +29,16 @@ This use case implements an intelligent financial analysis agent using Amazon Be
 ### Custom Code-Based Evaluators
 
 Five Lambda-backed code-based evaluators continuously monitor agent quality in production. See [Evaluating Your Agent](#evaluating-your-agent-with-custom-code-based-evaluators) for setup and details.
+
+### AgentCore Optimization
+
+[AgentCore Optimization](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/optimization.html) closes the loop between evaluation findings and validated improvements. It introduces three capabilities that together form a continuous improvement cycle:
+
+- **Recommendations**: AI-generated improvements to system prompts and tool descriptions, derived from real agent traces and a target evaluator metric. The service identifies failure patterns and proposes specific, targeted changes — no manual prompt engineering required.
+- **Configuration Bundles**: Versioned, immutable snapshots of agent configuration (system prompts, model IDs, tool descriptions) that decouple agent behavior from code. You can swap configurations at invocation time via a `baggage` header without redeploying the container.
+- **A/B Testing**: Controlled traffic splitting through AgentCore Gateway, with online evaluation scoring each session and reporting statistical significance across variants. Supports both config-bundle variants (same runtime, different prompts) and target-based variants (different runtime endpoints for code-level changes).
+
+See [Systematic Agent Quality Improvement](#systematic-agent-quality-improvement) for the full walkthrough.
 
 ---
 
@@ -259,18 +269,13 @@ The [agentcore CLI](https://github.com/aws/agentcore-cli) provides a convenient 
 
 **Install the CLI:**
 ```bash
-npm install -g @aws/agentcore-cli
+npm install -g @aws/agentcore
 ```
 > See the [AgentCore CLI repository](https://github.com/aws/agentcore-cli) for alternative install methods and latest version info.
 
 **Create a code-based evaluator:**
-```bash
-agentcore eval evaluator create \
-  --name "mt_schema_validator" \
-  --level TRACE \
-  --lambda-arn "arn:aws:lambda:us-west-2:<account>:function:market-trends-eval-schema-validator" \
-  --lambda-timeout 30
-```
+
+> **Note:** Code-based (Lambda-backed) evaluators are not configurable via the CLI. Use the `deploy.py` script under `evaluators/scripts/` which calls `bedrock-agentcore-control` directly, or register them via the AWS console/SDK.
 
 **Add an online evaluation config to your project:**
 ```bash
@@ -302,8 +307,8 @@ agentcore logs evals
 
 **Pause / resume online evaluation:**
 ```bash
-agentcore pause online-eval --name "market_trends_online_code_eval"
-agentcore resume online-eval --name "market_trends_online_code_eval"
+agentcore pause online-eval market_trends_online_code_eval
+agentcore resume online-eval market_trends_online_code_eval
 ```
 
 > **Note:** The `deploy.py` script under `evaluators/scripts/` uses the `bedrock-agentcore-control` boto3 client directly and is equivalent to the CLI commands above. Use whichever approach fits your workflow.
@@ -329,6 +334,268 @@ aws iam delete-role --role-name MarketTrendsEvalExecutionRole
 aws iam delete-role-policy --role-name MarketTrendsEvalLambdaRole --policy-name MarketTrendsEvalLambdaPermissions
 aws iam delete-role --role-name MarketTrendsEvalLambdaRole
 ```
+
+---
+
+## Systematic Agent Quality Improvement
+
+Once your agent is deployed and instrumented with evaluators, the real work begins: closing the loop between evaluation results and agent improvements. [AgentCore Optimization](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/optimization.html) provides a built-in improvement cycle that takes you from raw evaluation scores to statistically validated improvements — without manual prompt engineering or guesswork. See [How it works](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/optimization-how-it-works.html) for a full description of the cycle.
+
+The cycle has five stages:
+
+```
+Evaluate  →  Recommend  →  Bundle  →  A/B Test  →  Promote
+```
+
+| Stage | What happens | Key resource |
+|-------|-------------|--------------|
+| **Evaluate** | Measure current agent quality with batch or simulated evaluations | Batch evaluation |
+| **Recommend** | AI analyzes production traces and generates improved system prompt and tool descriptions | Recommendation API |
+| **Configuration Bundle** | Package original (control) and improved (treatment) configurations without redeploying | Configuration Bundle |
+| **A/B Test** | Route live traffic through the gateway and compare variants statistically | A/B Test |
+| **Promote** | Apply the winning configuration as the new default | Update bundle / promote runtime |
+
+### Quick Start
+
+```bash
+# Step 1: Run a simulated dataset evaluation to establish baseline scores
+export AGENT_RUNTIME_ARN=$(cat .agent_arn)
+export AWS_REGION=us-west-2
+uv run python optimization/user_simulated_dataset.py
+
+# Step 2: Run the full optimization cycle (baseline eval → recommendations → A/B test)
+uv run python optimization/optimize_agent.py
+
+# Step 3: Run only specific phases (e.g. get recommendations after generating more traffic)
+uv run python optimization/optimize_agent.py --phases 3 4
+
+# Step 4: Run target-based routing canary (requires a second deployed runtime)
+uv run python deploy.py --agent-name market_trends_agent_v2 --region us-west-2
+uv run python optimization/optimize_agent.py --phases 7 \
+    --v2-arn arn:aws:bedrock-agentcore:us-west-2:<account>:runtime/<v2-id> \
+    --state-file optimization/state.json
+
+# Cleanup all optimization resources
+uv run python optimization/optimize_agent.py --cleanup --state-file optimization/state.json
+```
+
+### Simulated Dataset Evaluation
+
+`optimization/user_simulated_dataset.py` runs a batch evaluation where an LLM-backed actor plays the role of an investment broker — no pre-scripted turn sequences needed.
+
+```
+Actor (LLM) ──turns──▶ Market Trends Agent ──spans──▶ CloudWatch
+                                                           │
+                                            [Batch Evaluators] ◀─────────┘
+                                                           │
+                                                [Aggregate Scores]
+```
+
+The actor drives realistic multi-turn conversations based on an `ActorProfile` (who the broker is, what they want to achieve). Five built-in scenarios cover the agent's core use cases:
+
+| Scenario | Actor profile | Goal |
+|----------|---------------|------|
+| `sim-tech-stock-deep-dive` | Senior tech broker, data-driven | NVDA + MSFT briefing for client meeting |
+| `sim-broker-profile-onboarding` | ESG and healthcare specialist | Set up profile, get personalized analysis |
+| `sim-morning-market-brief` | Portfolio manager, time-pressured | Pre-market briefing before investment committee |
+| `sim-financials-stock-comparison` | Value/dividend investor, bank specialist | Compare JPM, GS, BAC ahead of earnings |
+| `sim-portfolio-risk-review` | Energy sector broker, risk-aware | Assess XOM/CVX exposure given oil volatility |
+
+**Why simulated evaluation?** Hand-authored test scenarios tell you whether the agent handles *known* cases correctly, but miss edge cases and natural user variation. Simulated scenarios expose gaps that fixed scripts miss and scale scenario coverage without writing hundreds of multi-turn sequences. See the [simulated scenarios documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/simulation.html) for full details.
+
+### Optimization Recommendations
+
+`optimize_agent.py --phases 3 4` analyzes production traces and generates two types of improvement:
+
+**System prompt recommendation (Phase 3)** rewrites your system prompt to improve a target evaluator metric (default: `GoalSuccessRate`). The service identifies patterns in sessions where the agent failed to complete the user's goal and proposes specific prompt additions and restructuring.
+
+**Tool description recommendation (Phase 4)** improves how each tool is described so the LLM picks the correct tool more reliably. This directly improves `ToolSelectionAccuracy` — a common failure mode where the agent searches for news when it should retrieve stock data, or calls `identify_broker` when it should use `get_broker_financial_profile`.
+
+```python
+# Example: request a system prompt recommendation
+dp.start_recommendation(
+    name="mt_sp_rec",
+    type="SYSTEM_PROMPT_RECOMMENDATION",
+    recommendationConfig={
+        "systemPromptRecommendationConfig": {
+            "systemPrompt": {"text": CURRENT_SYSTEM_PROMPT},
+            "agentTraces": {
+                "cloudwatchLogs": {
+                    "logGroupArns": [LOG_GROUP_ARN],
+                    "serviceNames": [SERVICE_NAME],
+                    "startTime": start_dt,
+                    "endTime": now,
+                }
+            },
+            "evaluationConfig": {
+                "evaluators": [
+                    {"evaluatorArn": "arn:aws:bedrock-agentcore:::evaluator/Builtin.GoalSuccessRate"}
+                ]
+            },
+        }
+    },
+)
+```
+
+See: [Optimization recommendations documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/optimization-recommendations.html)
+
+### Configuration Bundle Testing (A/B — Prompt and Config Changes)
+
+A **Configuration Bundle** packages agent configuration (system prompt, tool descriptions, or other runtime settings) into a versioned artifact. The agent reads its configuration from the bundle at invocation time via a `baggage` header — no redeployment required.
+
+`optimize_agent.py --phases 5 6` creates a control bundle (original prompt) and a treatment bundle (AI-recommended prompt), then runs a 50/50 A/B test through an AgentCore Gateway:
+
+```
+User request
+     │
+     ▼
+[Gateway] ──50%──▶ [Control Bundle C]   ──▶ [Market Trends Runtime] ──▶ CloudWatch
+     │                                                                        │
+     └──50%──▶ [Treatment Bundle T1] ──▶ [Market Trends Runtime] ──▶ CloudWatch
+                                                                              │
+                                           [Online Eval Config] ◀────────────┘
+                                                    │
+                                           [A/B Test Results]
+```
+
+**Config bundle hook** — for the agent to read the injected configuration at invocation time, call `BedrockAgentCoreContext.get_config_bundle()` inside the entrypoint:
+
+```python
+from bedrock_agentcore.runtime import BedrockAgentCoreContext
+
+DEFAULT_SYSTEM_PROMPT = "..."   # fallback when no bundle is injected
+
+@app.entrypoint
+async def invoke(payload, context):
+    bundle = BedrockAgentCoreContext.get_config_bundle()
+    system_prompt = DEFAULT_SYSTEM_PROMPT
+    tool_descs = {}
+    if bundle:
+        system_prompt = bundle.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
+        tool_descs = bundle.get("tool_descriptions", {})
+    # apply system_prompt and tool_descs to the agent ...
+```
+
+This lets you test any prompt change — including AI-generated recommendations — against live traffic without touching the deployed container.
+
+```python
+# Invoke with a specific bundle (control)
+dp.invoke_agent_runtime(
+    agentRuntimeArn=AGENT_ARN,
+    runtimeSessionId=session_id,
+    payload=json.dumps({"prompt": prompt}).encode(),
+    baggage=(
+        f"aws.agentcore.configbundle_arn={control_bundle_arn},"
+        f"aws.agentcore.configbundle_version={control_bundle_version}"
+    ),
+)
+```
+
+See: [Configuration bundles documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/configuration-bundles.html)
+
+### Target-Based Routing (A/B — Model Upgrade or Code Rollout)
+
+When you have an actual code change — a new model, a new tool, or a refactored agent — **target-based routing** lets you do a phased canary rollout. Both runtime versions run concurrently; the gateway splits traffic between them based on configured weights.
+
+`optimize_agent.py --phases 7 --v2-arn <arn>` runs a 90/10 canary split:
+
+```
+User request
+     │
+     ▼
+[Gateway] ──90%──▶ [Market Trends v1] ──▶ CloudWatch  ──▶ [Online Eval C]
+     │                                                           │
+     └──10%──▶ [Market Trends v2] ──▶ CloudWatch  ──▶ [Online Eval T1]
+                                                                 │
+                                                     [A/B Test (per-variant)]
+```
+
+**When to use each routing type:**
+
+| Routing type | Use when | Code change? |
+|---|---|---|
+| Config-bundle routing | Prompt or config optimization | No redeployment needed |
+| Target-based routing | New model, new tool, refactored logic | Requires v2 runtime deployment |
+
+**Phased rollout workflow:**
+
+```bash
+# Start canary at 10% (validate no regressions)
+uv run python optimization/optimize_agent.py --phases 7 --v2-arn <v2-arn>
+
+# Ramp to 50% (gather statistical significance)
+aws bedrock-agentcore update-ab-test --ab-test-id <id> \
+    --variants '[{"name":"C","weight":50},{"name":"T1","weight":50}]'
+
+# Promote to 100% (full cutover)
+aws bedrock-agentcore update-ab-test --ab-test-id <id> \
+    --variants '[{"name":"C","weight":0},{"name":"T1","weight":100}]'
+```
+
+See: [A/B testing documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ab-testing.html)
+
+### Reading A/B Test Results
+
+The `GetAbTest` API returns per-variant statistics once enough sessions have been evaluated. Results appear 10–15 minutes after your last request:
+
+```python
+ab = dp.get_ab_test(abTestId=ab_test_id)
+results = ab.get("results", {})
+for m in results.get("evaluatorMetrics", []):
+    name = m.get("evaluatorArn", "").split("/")[-1]
+    cs   = m.get("controlStats", {})
+    for vr in m.get("variantResults", []):
+        change = (float(vr["mean"]) - float(cs["mean"])) / float(cs["mean"]) * 100
+        print(f"{name}: C={cs['mean']:.3f}  T1={vr['mean']:.3f}  "
+              f"change={change:+.1f}%  significant={vr['isSignificant']}")
+```
+
+**Decision framework:**
+
+| Outcome | Action |
+|---------|--------|
+| `isSignificant=True`, T1 mean > C mean | Promote treatment — update bundle or ramp target weight to 100% |
+| `isSignificant=True`, T1 mean < C mean | Keep control — investigate recommendation or v2 regression |
+| `isSignificant=False` | Send more traffic — need larger sample size for statistical power |
+
+### Optimization Scripts Reference
+
+| Script | What it does |
+|--------|-------------|
+| `optimization/custom_evaluators.py` | Create/manage 3 custom LLM-as-a-judge evaluators (market data accuracy, broker personalization, financial professionalism) |
+| `optimization/user_simulated_dataset.py` | Standalone batch evaluation with LLM actor-driven broker conversations |
+| `optimization/optimize_agent.py` | Full cycle: traffic → baseline eval → SP/TD recommendations → config bundles → A/B tests |
+
+```
+optimization/
+├── custom_evaluators.py       # Create/reuse custom LLM-as-a-judge evaluators
+├── user_simulated_dataset.py  # LLM actor-driven batch evaluation (5 broker scenarios)
+└── optimize_agent.py          # Full optimization cycle (Phases 1–8)
+```
+
+**Running order:**
+
+```bash
+# Optional: create custom domain-specific evaluators first
+uv run python optimization/custom_evaluators.py
+
+# Standalone simulated eval (independent, can run any time)
+uv run python optimization/user_simulated_dataset.py
+
+# Full optimization cycle (phases run in order: 2→1→3→4→5→6)
+uv run python optimization/optimize_agent.py --phases 1 2 3 4 5 6
+
+# Resume specific phases from a saved state file
+uv run python optimization/optimize_agent.py --phases 6 --state-file optimization/state.json
+
+# Promote winning treatment into control bundle after Phase 6
+uv run python optimization/optimize_agent.py --phases 5p --state-file optimization/state.json
+
+# Clean up all optimization resources
+uv run python optimization/optimize_agent.py --cleanup --state-file optimization/state.json
+```
+
+> **Note:** `optimize_agent.py` requires `AGENT_ROLE_NAME=MarketTrendsAgentRole` (the role created by `deploy.py`). Use `PYTHONUNBUFFERED=1 python -u` to see live output.
 
 ---
 
@@ -414,7 +681,7 @@ uv run python cleanup.py --dry-run
 uv run python cleanup.py --skip-iam
 
 # Cleanup in different region
-uv run python cleanup.py --region us-west-2
+uv run python cleanup.py --region "<aws_region>"
 ```
 
 **What gets cleaned up:**
@@ -427,38 +694,6 @@ uv run python cleanup.py --region us-west-2
 - IAM roles and policies (unless `--skip-iam`)
 - Local deployment files
 
----
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Throttling Errors**: Wait a few minutes between requests. Check CloudWatch logs for details.
-
-2. **Permission Errors**: The deployment script creates all required IAM permissions. Check AWS credentials are configured correctly.
-
-3. **`CodeBuild project 'bedrock-agentcore-<agent>-builder' not found`**: On a brand-new account or with a new `--agent-name`, run `agentcore deploy` from the [AgentCore CLI](https://github.com/aws/agentcore-cli) once to bootstrap the CodeBuild project and S3 source bucket. `deploy.py` is designed for subsequent re-deploys.
-
-4. **`ValidationException: The specified image identifier does not exist in the repository`** during `CreateAgentRuntime`: the CodeBuild buildspec tags the pushed image with a fixed version tag, not `:latest`. Retag the pushed digest and re-run:
-   ```bash
-   MANIFEST=$(aws ecr batch-get-image --repository-name bedrock-agentcore-<agent-name> \
-     --image-ids imageTag=<version-tag> --region us-west-2 \
-     --query 'images[0].imageManifest' --output text)
-   aws ecr put-image --repository-name bedrock-agentcore-<agent-name> \
-     --image-tag latest --image-manifest "$MANIFEST" --region us-west-2
-   ```
-
-5. **`Memory with name MarketTrendsAgentMultiStrategy already exists`** right after `cleanup.py`: AgentCore Memory deletion takes ~3 minutes to propagate. Wait until `aws bedrock-agentcore-control list-memories --region us-west-2` stops listing the deleted memory, then re-run `deploy.py`.
-
-6. **Evaluator ResourceNotFoundException**: Ensure evaluators are registered against the production control plane (`bedrock-agentcore-control`), not a custom/gamma endpoint. Re-run `evaluators/scripts/deploy.py`.
-
-7. **Online eval config not scoring traffic**: Confirm `AGENT_RUNTIME_ARN` matches your deployed agent. The log group name is derived from the ARN; a mismatch means no spans are read.
-
-8. **No evaluation results appearing in CloudWatch**: Online evaluation scores sessions 5–10 minutes after session end. `results.py` returning 0 events immediately after generating traffic is expected — wait a few minutes and retry.
-
-9. **Memory Instance Duplicates**: If you see multiple memory instances, run `uv run python cleanup.py` then redeploy.
-
----
 
 ## Security
 
