@@ -1,0 +1,9 @@
+{
+  "agent_name": "claude_code_89491",
+  "runtime_id": "claude_code_89491-F84ySyFzSd",
+  "runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:623129719707:runtime/claude_code_89491-F84ySyFzSd",
+  "region": "us-east-1",
+  "ecr_uri": "623129719707.dkr.ecr.us-east-1.amazonaws.com/agentcore-claude-code:claude_code_89491",
+  "s3files_access_point_arn": "arn:aws:s3files:us-east-1:623129719707:file-system/fs-0c276db1ba6347ec1/access-point/fsap-0e1b5d94dab8da3db",
+  "s3files_mount_path": "/mnt/s3files"
+}

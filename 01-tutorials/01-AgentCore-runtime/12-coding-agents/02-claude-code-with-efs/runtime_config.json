@@ -1,0 +1,9 @@
+{
+  "agent_name": "claude_code_02701",
+  "runtime_id": "claude_code_02701-zr5JYsBhVr",
+  "runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:623129719707:runtime/claude_code_02701-zr5JYsBhVr",
+  "region": "us-east-1",
+  "ecr_uri": "623129719707.dkr.ecr.us-east-1.amazonaws.com/agentcore-claude-code:claude_code_02701",
+  "efs_access_point_arn": "arn:aws:elasticfilesystem:us-east-1:623129719707:access-point/fsap-0121c98f6d9fae8f8",
+  "efs_mount_path": "/mnt/efs"
+}
