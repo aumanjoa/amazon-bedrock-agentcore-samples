@@ -63,7 +63,7 @@ def multi_isv_architecture():
             gw = Custom("MCP Gateway\nJSON-RPC 2.0\nJWT Authorizer", ICON_RUNTIME)
 
         with Cluster("Gateway Targets", graph_attr=_C_TARGETS):
-            sf_target = Custom("Salesforce Target\nIntegration Provider\n43 tools", ICON_RUNTIME)
+            sf_target = Custom("Salesforce Target\nOpenAPI Schema\n43 tools", ICON_RUNTIME)
             sap_target = Custom("SAP Target\nMCP Server\n9 tools", ICON_RUNTIME)
 
         with Cluster("Outbound Auth", graph_attr=_C_OUTBOUND):

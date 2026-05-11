@@ -15,7 +15,7 @@ This tutorial series demonstrates how to connect multiple ISV SaaS platforms (Sa
 | Gateway Target types | Integration Provider Template (Salesforce), MCP Server (SAP) |
 | Inbound Auth IdP | Amazon Cognito |
 | Outbound Auth | CustomOauth2 (Salesforce Connected App), CustomOauth2 (SAP Cognito) |
-| LLM model | Anthropic Claude Sonnet 4 |
+| LLM model | Anthropic Claude Sonnet 4.6 (`us.anthropic.claude-sonnet-4-6` — replace `us.` with your region prefix or use `global.`) |
 | Tutorial vertical | Enterprise CRM + ERP |
 | Example complexity | Medium |
 | SDK used | boto3, requests |
@@ -24,7 +24,7 @@ This tutorial series demonstrates how to connect multiple ISV SaaS platforms (Sa
 
 | # | Notebook | Description |
 |---|---|---|
-| 1 | [01-salesforce-gateway-target.ipynb](01-salesforce-gateway-target.ipynb) | Add Salesforce Lightning Platform as a Gateway integration target with CustomOauth2 |
+| 1 | [01-salesforce-gateway-target.ipynb](01-salesforce-gateway-target.ipynb) | Add Salesforce Lightning Platform via the built-in Integration Provider Template with CustomOauth2 |
 | 2 | [02-sap-mcp-server-target.ipynb](02-sap-mcp-server-target.ipynb) | Add AWS for SAP MCP Server as a Gateway MCP target |
 | 3 | [03-cross-isv-queries.ipynb](03-cross-isv-queries.ipynb) | Cross-system queries combining Salesforce + SAP through one gateway |
 
@@ -35,7 +35,8 @@ This tutorial series demonstrates how to connect multiple ISV SaaS platforms (Sa
 ## Prerequisites
 
 - An AWS account with access to Amazon Bedrock AgentCore
-- Python 3.11+
+- Model access enabled for `anthropic.claude-sonnet-4-6` in your region (see [Manage model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html))
+- Python 3.11–3.13 (Python 3.14 is not yet supported — the AWS CRT library lacks a 3.14 wheel)
 - A Salesforce Developer Edition org with a Connected App configured for OAuth2 `client_credentials` flow
 - Access to an AWS for SAP MCP Server deployment (see [documentation](https://docs.aws.amazon.com/mcp-sap/latest/awsforsapmcp/introduction.html))
 - AWS CLI configured with appropriate credentials
@@ -57,12 +58,16 @@ This tutorial series demonstrates how to connect multiple ISV SaaS platforms (Sa
 ## Important Notes
 
 - **Salesforce Developer Edition orgs** hibernate after ~24 hours of inactivity. Log into the Salesforce web UI to wake the org before running the notebooks.
-- **CustomOauth2** is required for Salesforce Developer Edition orgs. The built-in `SalesforceOauth2` vendor uses `login.salesforce.com` which does not support `client_credentials` on Developer Edition domains.
+- **CustomOauth2** is required for Salesforce Developer Edition orgs. The built-in `SalesforceOauth2` vendor hardcodes the `login.salesforce.com` OAuth endpoint. Developer Edition orgs only allow `client_credentials` on their org-specific domain (`*.develop.my.salesforce.com`), so we use `CustomOauth2` with the org's OAuth2 metadata.
 - **SAP MCP Server** runs in read-only mode by default. Write operations must be explicitly enabled in the SAP MCP Server configuration.
 
 ## Disclaimer
 
-This is sample code for demonstration purposes only. Not intended for production use without additional security testing.
+This is sample code for demonstration purposes only. Not intended for production use without additional security review. In particular:
+
+- **IAM permissions** in this tutorial use broad `*` resource scope for simplicity. Production deployments should scope resources to specific ARNs.
+- **Salesforce target** uses the built-in Integration Provider Template, which must be created via the AWS Console (not API). See the [supported integrations](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-target-integrations.html).
+- **Content-Type parameter** — The Salesforce schema exposes `Content-Type` as a tool parameter. Because the gateway [manages Content-Type as a restricted header](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-headers.html), pass `""` (empty string) for this parameter on create/update operations to prevent header duplication.
 
 ## License
 
