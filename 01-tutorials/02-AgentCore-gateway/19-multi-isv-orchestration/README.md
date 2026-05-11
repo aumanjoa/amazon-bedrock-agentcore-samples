@@ -30,23 +30,7 @@ This tutorial series demonstrates how to connect multiple ISV SaaS platforms (Sa
 
 ## Architecture
 
-```
-                          ┌─────────────────────────────────┐
-                          │  Amazon Bedrock AgentCore Gateway │
-                          │  (Single MCP endpoint)           │
-                          └─────────┬──────────┬────────────┘
-                                    │          │
-                    ┌───────────────┘          └───────────────┐
-                    ▼                                          ▼
-    ┌───────────────────────────┐          ┌───────────────────────────┐
-    │  Salesforce Lightning      │          │  AWS for SAP MCP Server    │
-    │  Platform (Integration     │          │  (MCP Server Target)       │
-    │  Provider Template)        │          │                           │
-    │                           │          │  ┌─────────────────────┐  │
-    │  43 tools: Account, Case, │          │  │ SAP S/4HANA (OData) │  │
-    │  Contact, Lead, Opp, ...  │          │  └─────────────────────┘  │
-    └───────────────────────────┘          └───────────────────────────┘
-```
+![Multi-ISV Orchestration Architecture](images/multi-isv-architecture.png)
 
 ## Prerequisites
 
