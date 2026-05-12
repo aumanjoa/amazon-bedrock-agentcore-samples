@@ -130,5 +130,5 @@ def wait_for_target_ready(
                     return item.get("targetId", "")
                 if status in ("FAILED", "SYNCHRONIZE_UNSUCCESSFUL"):
                     raise RuntimeError(f"Target '{target_name}' failed with status: {status}")
-        time.sleep(10)
+        time.sleep(10)  # nosemgrep: arbitrary-sleep — polling interval for async target provisioning
     raise TimeoutError(f"Target '{target_name}' did not reach READY within {timeout}s")
